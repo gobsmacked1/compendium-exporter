@@ -1,0 +1,20 @@
+<form>
+  <div class="form-group">
+    <label><strong>Select Compendiums to Export</strong></label>
+    <div class="form-fields" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 4px; max-height: 650px; overflow-y: auto; border: 1px solid #ccc; padding: 8px;">
+      <fieldset>
+        <legend>Select Compendiums:</legend>
+        {{#each packs}}
+          <label style="white-space: nowrap; text-align: left;" title="{{label}}">
+            <input type="checkbox" name="packs" value="{{id}}" />
+            {{shortLabel}}
+          </label>
+        {{/each}}
+      </fieldset>
+    </div>
+  </div>
+  <footer class="sheet-footer flexrow" style="margin-top: 10px;">
+    <button type="button" name="export"><i class="fas fa-file-export"></i> Export Selected</button>
+    <button type="button" name="halt" style="margin-left: 10px; background-color: red; color: white;"><i class="fas fa-stop"></i> Halt</button>
+  </footer>
+</form>
