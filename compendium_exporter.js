@@ -49,10 +49,13 @@ Hooks.once("ready", async function () {
 
   // Define the default excluded keys
   const defaultExcludedKeysString = [
-    "_id", "uuid", "key", "group", "img", "startingEquipment", "tint",
-    "chris-premades", "betterRolls5e", "midi-qol", "magicitems",
-    "prototypeToken", "ActiveAuras", "scene-packer", "ddbimporter", "dae",
-    "ownership", "_stats", "sort", "midiProperties", "folder", "tagger", "flags"
+    "_id", "uuid", "key", "group", "img", "startingEquipment", "tint", 
+    "chris-premades", "betterRolls5e", "midi-qol", "magicitems", 
+    "prototypeToken", "ActiveAuras", "scene-packer", "ddbimporter", "dae", 
+    "ownership", "_stats", "sort", "midiProperties", "folder", "tagger", 
+    "video", "src", "format", "token", "url", "tokenImg", "titleHTML", 
+    "navigation", "dnd5e", "autoanimations", "itemacro", "walledtemplates", 
+    "sound"
   ].join(', ');
 
   // Register the setting for custom excluded keys
@@ -62,6 +65,40 @@ Hooks.once("ready", async function () {
     scope: "world",
     config: true, // Makes it appear in the module settings configuration window
     default: defaultExcludedKeysString,
+    type: String
+  });
+
+  // Define the default patterns/strings to exclude from TXT values
+  const defaultExcludedStrings = [
+    "@UUID[",
+    "@Embed[",
+    "@Compendium[",
+    "&Reference[",
+    //"[[", // Matches [[/r ...]], [[/check ...]], etc.
+    //"Compendium.", // Matches Compendium.<pack>.<entity>
+    //"game.", // Matches game.actors, game.items etc. often found in formulas/scripts
+    "CONFIG.", // Matches CONFIG.DND5E... etc.
+    "rollData.",
+    //"abilities.",
+    //"skills.",
+    //"token.",
+    //"actor.",
+    //"item.",
+    "----", // Common separator line pattern
+    "====", // Common separator line pattern
+    "****", // Common separator line pattern
+    "____" // Common separator line pattern
+    // Add other simple literal strings or prefixes here if needed
+  ];
+  const defaultExcludedStringsSetting = defaultExcludedStrings.join(', ');
+
+  // Register the setting for custom excluded strings/patterns
+  game.settings.register("compendium-exporter", "customExcludedStrings", {
+    name: "Custom Excluded Strings (TXT Export)",
+    hint: "Comma-separated list of literal strings or simple prefixes. Text values containing any of these will be excluded from TXT export. Default includes common Foundry patterns.",
+    scope: "world",
+    config: true,
+    default: defaultExcludedStringsSetting, // Use the predefined defaults
     type: String
   });
 
@@ -153,8 +190,8 @@ const sanitizeFilenamePart = (name) => {
   return sanitized || "Unnamed";
 };
 
-// Add customExcludedKeys parameter
-async function processDocument(doc, exportYaml, exportJson, exportTxt, customExcludedKeys, zip) {
+// Update processDocument signature
+async function processDocument(doc, exportYaml, exportJson, exportTxt, customExcludedKeys, customExcludedStrings, zip) {
   const obj = doc.toObject();
   const safeDocName = sanitizeFilenamePart(doc.name);
   const docType = sanitizeFilenamePart(doc.documentName || 'UnknownType');
@@ -172,8 +209,8 @@ async function processDocument(doc, exportYaml, exportJson, exportTxt, customExc
   }
 
   if (exportTxt) {
-    // Pass customExcludedKeys to scrubHumanReadableContent
-    const scrubbedData = scrubHumanReadableContent(obj, customExcludedKeys);
+    // Pass customExcludedKeys and customExcludedStrings to scrubHumanReadableContent
+    const scrubbedData = scrubHumanReadableContent(obj, customExcludedKeys, customExcludedStrings);
     const serializeToTxt = (data, indent = 0) => {
       return Object.entries(data)
         .map(([key, value]) => {
@@ -227,10 +264,19 @@ async function exportCompendiumsClientSide(selectedKeys, exportYaml, exportJson,
   // Get and parse custom excluded keys from settings
   const customExcludedKeysSetting = game.settings.get("compendium-exporter", "customExcludedKeys");
   const customExcludedKeys = customExcludedKeysSetting.split(',')
-                               .map(key => key.trim()) // Trim whitespace
-                               .filter(key => key.length > 0); // Remove empty entries
+                               .map(key => key.trim())
+                               .filter(key => key.length > 0);
+  console.log(`[Compendium Exporter] Using excluded keys for TXT: ${customExcludedKeys.join(', ')}`);
 
-  console.log(`[Compendium Exporter] Using excluded keys for TXT: ${customExcludedKeys.join(', ')}`); // Log the keys being used
+  // Get and parse custom excluded strings from settings
+  const customExcludedStringsSetting = game.settings.get("compendium-exporter", "customExcludedStrings");
+  const customExcludedStrings = customExcludedStringsSetting.split(',')
+                                  .map(str => str.trim())
+                                  .filter(str => str.length > 0);
+  if (customExcludedStrings.length > 0) {
+    console.log(`[Compendium Exporter] Using custom excluded strings for TXT: ${customExcludedStrings.join(', ')}`);
+  }
+
 
   const total = selectedKeys.length;
   let count = 0;
@@ -265,7 +311,8 @@ async function exportCompendiumsClientSide(selectedKeys, exportYaml, exportJson,
         }
 
         const doc = await pack.getDocument(docId);
-        await processDocument(doc, exportYaml, exportJson, exportTxt, customExcludedKeys, zip);
+        // Pass customExcludedStrings to processDocument
+        await processDocument(doc, exportYaml, exportJson, exportTxt, customExcludedKeys, customExcludedStrings, zip);
         docsInCurrentBatch++;
 
         if (docsInCurrentBatch >= 100) {
@@ -303,97 +350,157 @@ function notifyProgress(message, count, total) {
   ui.notifications.info(`${message} (${count}/${total})`);
 }
 
-// Add customExcludedKeys parameter
-function scrubHumanReadableContent(obj, customExcludedKeys) {
+// Updated HTML to Text Conversion Function - Replaces [[...]] with [...]
+const convertHtmlToText = (htmlString) => {
+  if (typeof htmlString !== 'string' || !htmlString.trim()) return '';
 
-  // Enhanced HTML to Text Conversion Function
-  const convertHtmlToText = (htmlString) => {
-    if (typeof htmlString !== 'string') return '';
+  let text = '';
+  try {
+    // ... (DOM parsing and extractText helper remain the same) ...
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(htmlString, 'text/html');
+    const extractText = (node) => {
+      // ... (extractText function remains the same) ...
+      let result = '';
+      const blockTags = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'div', 'ul', 'ol', 'li', 'table', 'tr', 'th', 'td', 'blockquote', 'pre', 'br', 'hr']);
 
-    let text = htmlString;
-    // Basic HTML to Text Conversion (replace block tags with newlines, inline with spaces/delimiters)
-    text = text.replace(/<br\s*\/?>/gi, "\n");       // Handle <br>
-    text = text.replace(/<\/h[1-6]>\s*<h[1-6]>/gi, "\n"); // Add newline between consecutive headings
-    text = text.replace(/<\/h[1-6]>/gi, "\n");       // Add newline after headings
-    text = text.replace(/<\/p>/gi, "\n");           // Add newline after paragraphs
-    text = text.replace(/<\/li>/gi, "\n");          // Add newline after list items
-    text = text.replace(/<\/td>\s*<\/tr>/gi, "\n"); // Handle cell followed immediately by row end
-    text = text.replace(/<\/tr>/gi, "\n");          // Add newline after table rows
-    text = text.replace(/<\/td>/gi, " | ");         // Add separator after table cells
-    text = text.replace(/<th>/gi, " ");            // Treat table headers like cells for spacing
-    text = text.replace(/<\/th>/gi, " | ");         // Add separator after table headers
+      for (const child of node.childNodes) {
+        if (child.nodeType === Node.TEXT_NODE) {
+          result += child.nodeValue;
+        } else if (child.nodeType === Node.ELEMENT_NODE) {
+           const tagName = child.tagName.toLowerCase();
+           if (blockTags.has(tagName) && result.length > 0 && !/\s$/.test(result)) {
+               result += ' ';
+           }
+           result += extractText(child);
+           if (blockTags.has(tagName) && result.length > 0 && !/\s$/.test(result)) {
+               result += ' ';
+           }
+        }
+      }
+      return result;
+    };
+    text = extractText(doc.body);
 
-    // Strip remaining tags (like <a>, <span>, <strong>, <em>, etc.)
-    text = text.replace(/<\/?[^>]+(>|$)/g, "");
 
-    // Remove UUID references
-    text = text.replace(/@UUID\[.*?\](\{[^}]*\})?/g, ""); // Remove UUIDs and optional labels like {Slippery Mind}
+    // Replace Non-Breaking Spaces (NBSP) with regular spaces FIRST
+    text = text.replace(/\u00A0/g, ' ');
 
-    // Clean up extra whitespace and newlines
-    // Replace multiple spaces/tabs with a single space
-    text = text.replace(/[ \t]+/g, ' ');
-    // Replace lines with only whitespace (including spaces, tabs, |) with a single newline
-    text = text.replace(/^[ \t\|]*$/gm, '');
-    // Reduce multiple consecutive newlines to a maximum of two
-    text = text.replace(/\n{3,}/g, '\n\n');
-    // Trim leading/trailing whitespace/newlines
-    text = text.trim();
+    // --- Pattern Removal/Replacement Section ---
+    // Remove common Foundry patterns AFTER text extraction
+    text = text.replace(/@UUID\[.*?\]({[^}]*})?/g, "");
+    text = text.replace(/@Embed\[.*?\]({[^}]*})?/g, "");
+    text = text.replace(/@Compendium\[.*?\]({[^}]*})?/g, "");
+    text = text.replace(/&Reference\[.*?\]({[^}]*})?/g, ""); // Remove &Reference links
+    // Replace [[content]] with [content] using a capturing group
+    text = text.replace(/\[\[(.*?)\]\]/g, '[$1]');
 
-    return text;
-  };
+    // --- End Pattern Removal/Replacement ---
 
-  const isHumanReadable = (value, processedText) => {
-    // Check the processed text, not the raw value
-    if (typeof processedText === "string") {
-      // Check if the string has content and is not too long (adjust length as needed)
-      // Removed the alphanumeric check as processed text can have symbols like |
-      // Increased limit significantly to allow for long descriptions
-      return processedText.length > 0 && processedText.length <= 10000;
+  } catch (e) {
+    console.warn("[Compendium Exporter] Error parsing HTML string with DOMParser, falling back:", e, htmlString);
+    // Fallback logic
+    text = htmlString;
+    // ... (other fallback replacements) ...
+    text = text.replace(/@UUID\[.*?\]({[^}]*})?/g, "");
+    text = text.replace(/@Embed\[.*?\]({[^}]*})?/g, "");
+    text = text.replace(/@Compendium\[.*?\]({[^}]*})?/g, "");
+    text = text.replace(/&Reference\[.*?\]({[^}]*})?/g, "");
+    // Apply the same replacement in the fallback
+    text = text.replace(/\[\[(.*?)\]\]/g, '[$1]');
+    // ... (rest of fallback replacements) ...
+    text = text.replace(/&nbsp;/gi, ' ');
+    text = text.replace(/\u00A0/g, ' ');
+    text = text.replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&apos;/gi, "'");
+  }
+
+  // Final cleanup of whitespace
+  text = text.replace(/[ \t]+/g, ' ');
+  text = text.replace(/\n\s*\n/g, '\n\n');
+  text = text.replace(/^\s+|\s+$/g, '');
+
+  return text; // Return the cleaned text
+};
+
+// isNaturalLanguageString remains the same (checks custom list + regex rules)
+const isNaturalLanguageString = (text, customExcludedStrings) => {
+    // ... (existing code including check against customExcludedStrings and regex rules 1-8) ...
+    if (typeof text !== 'string' || !text) return false;
+
+    // Rule 0: Check against custom excluded strings first
+    if (customExcludedStrings && customExcludedStrings.length > 0) {
+        for (const excludedStr of customExcludedStrings) {
+            // Check if the *cleaned* text still contains an excluded string/prefix
+            if (text.includes(excludedStr)) {
+                // console.log(`[Scrub] Excluding text containing custom string: "${excludedStr}" in "${text.substring(0, 50)}..."`);
+                return false;
+            }
+        }
+    }
+    // ... (Rules 1-8) ...
+    if (/@(Embed|UUID|Compendium)\[.*?\]/.test(text)) return false;
+    if (/\bCompendium\.[a-zA-Z0-9_-]{3,}\.[a-zA-Z0-9_-]{3,}/.test(text)) return false;
+    if (/\b[a-z-]+\.[A-Z][a-zA-Z]+.[a-zA-Z0-9]{10,}/.test(text)) return false;
+    if (/[^a-zA-Z0-9\s.,!?;:'"-]{4,}/.test(text)) return false;
+    if (/[\[\]{}<>]/.test(text) && text.length < 100) return false;
+    if (/---{2,}/.test(text)) return false;
+    if (/[a-zA-Z0-9._-]{25,}/.test(text) && !/\s/.test(text)) return false;
+    if (/&[a-zA-Z]+;/g.test(text)) return false;
+    if (/\b[a-zA-Z_-]+\.[a-zA-Z_-]+/.test(text) && text.length < 50 && !text.includes(' ')) return false;
+
+    return true;
+};
+
+
+// isHumanReadable remains the same
+const isHumanReadable = (value, processedValue) => {
+    // ... (existing code) ...
+    if (typeof processedValue === "string") {
+        return processedValue.length > 0 && processedValue.length <= 10000;
     }
     if (typeof value === "number") {
-      // Check if the number is within a reasonable range and not zero
-      return value >= -1_000_000_000_000 && value <= 1_000_000_000_000 && value !== 0;
+        return value >= -1_000_000_000_000 && value <= 1_000_000_000_000 && value !== 0;
     }
-    // Exclude booleans unless explicitly needed
-    // Exclude null/undefined implicitly
     return false;
-  };
+};
 
-  // isKeyHumanReadable now uses the passed-in array
+
+// Update scrubHumanReadableContent to use the modified convertHtmlToText
+function scrubHumanReadableContent(obj, customExcludedKeys, customExcludedStrings) {
+
   const isKeyHumanReadable = key => {
-    // Use the provided customExcludedKeys array
     return !customExcludedKeys.includes(key);
   };
 
   const scrubbed = {};
   for (const [key, value] of Object.entries(obj)) {
-    // isKeyHumanReadable now uses the custom list implicitly via closure
     if (!isKeyHumanReadable(key)) {
-      continue; // Skip excluded keys
+      continue;
     }
 
     if (typeof value === "object" && value !== null) {
-      // Handle specific nested structures if needed, e.g., description.value
       if (key === "description" && value.hasOwnProperty("value") && typeof value.value === 'string') {
+         // convertHtmlToText now only takes the HTML string
          const processedText = convertHtmlToText(value.value);
-         if (isHumanReadable(value.value, processedText)) {
+         // Check basic readability AND natural language (which checks customExcludedStrings)
+         if (isHumanReadable(processedText, processedText) && isNaturalLanguageString(processedText, customExcludedStrings)) {
            scrubbed[key] = processedText;
          }
       } else {
-        // Otherwise, recursively scrub nested objects, passing the keys down
-        const nestedScrubbed = scrubHumanReadableContent(value, customExcludedKeys); // Pass keys recursively
+        // Pass customExcludedStrings recursively for isNaturalLanguageString checks deeper down
+        const nestedScrubbed = scrubHumanReadableContent(value, customExcludedKeys, customExcludedStrings);
         if (Object.keys(nestedScrubbed).length > 0) {
           scrubbed[key] = nestedScrubbed;
         }
       }
     } else if (typeof value === 'string') {
-        // Process any string value using the HTML converter
+        // convertHtmlToText now only takes the HTML string
         const processedText = convertHtmlToText(value);
-        if (isHumanReadable(value, processedText)) {
+        // Check basic readability AND natural language (which checks customExcludedStrings)
+        if (isHumanReadable(processedText, processedText) && isNaturalLanguageString(processedText, customExcludedStrings)) {
             scrubbed[key] = processedText;
         }
-    } else if (isHumanReadable(value, value)) { // Pass non-string value directly
-        // Handle numbers that pass the check
+    } else if (isHumanReadable(value, value)) { // Check non-string, non-object values (like numbers)
         scrubbed[key] = value;
     }
   }

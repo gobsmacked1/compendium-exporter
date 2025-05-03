@@ -2,7 +2,7 @@
   "id": "compendium-exporter",
   "title": "Compendium Exporter",
   "description": "Exports selected compendium documents into YAML, JSON, and/or human-readable TXT files, packaged into ZIP archives.",
-  "version": "1.0.0", 
+  "version": "1.1.1", 
   "authors": [
     { "name": "LocalYochlol",
     "ko-fi": "https://ko-fi.com/caa421"
