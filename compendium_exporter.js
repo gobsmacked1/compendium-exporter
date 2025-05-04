@@ -63,7 +63,7 @@ Hooks.once("ready", async function () {
     name: "Custom Excluded Keys (TXT Export)",
     hint: "Comma-separated list of keys to exclude from the TXT export format. Leave blank to use defaults.",
     scope: "world",
-    config: true, // Makes it appear in the module settings configuration window
+    config: true,
     default: defaultExcludedKeysString,
     type: String
   });
@@ -98,7 +98,7 @@ Hooks.once("ready", async function () {
     hint: "Comma-separated list of literal strings or simple prefixes. Text values containing any of these will be excluded from TXT export. Default includes common Foundry patterns.",
     scope: "world",
     config: true,
-    default: defaultExcludedStringsSetting, // Use the predefined defaults
+    default: defaultExcludedStringsSetting,
     type: String
   });
 
@@ -209,19 +209,27 @@ async function processDocument(doc, exportYaml, exportJson, exportTxt, customExc
   }
 
   if (exportTxt) {
-    // Pass customExcludedKeys and customExcludedStrings to scrubHumanReadableContent
-    const scrubbedData = scrubHumanReadableContent(obj, customExcludedKeys, customExcludedStrings);
+    // Step 1: Prune empty keys/branches
+    let scrubbedData = scrubHumanReadableContent(obj, customExcludedKeys, customExcludedStrings);
+    scrubbedData = pruneEmptyKeys(scrubbedData);
+
+    // Step 2: Collapse whitespace during serialization
     const serializeToTxt = (data, indent = 0) => {
-      return Object.entries(data)
-        .map(([key, value]) => {
-          const prefix = " ".repeat(indent);
-          if (typeof value === "object" && value !== null) {
-            return `${prefix}${key}:\n${serializeToTxt(value, indent + 2)}`;
-          }
-          return `${prefix}${key}: ${value}`;
-        })
-        .join("\n");
+      if (typeof data === "object" && data !== null) {
+        return Object.entries(data)
+          .map(([k, v]) =>
+            " ".repeat(indent) +
+            k +
+            ": " +
+            (typeof v === "object" && v !== null
+              ? "\n" + serializeToTxt(v, indent + 2)
+              : collapseWhitespace(String(v)))
+          )
+          .join("\n");
+      }
+      return collapseWhitespace(String(data));
     };
+
     const txtData = serializeToTxt(scrubbedData);
     zip.file(`${baseFilename}.txt`, txtData);
   }
@@ -456,7 +464,7 @@ const isNaturalLanguageString = (text, customExcludedStrings) => {
 const isHumanReadable = (value, processedValue) => {
     // ... (existing code) ...
     if (typeof processedValue === "string") {
-        return processedValue.length > 0 && processedValue.length <= 10000;
+        return processedValue.length > 0 && processedValue.length <= 100000;
     }
     if (typeof value === "number") {
         return value >= -1_000_000_000_000 && value <= 1_000_000_000_000 && value !== 0;
@@ -505,4 +513,38 @@ function scrubHumanReadableContent(obj, customExcludedKeys, customExcludedString
     }
   }
   return scrubbed;
+}
+
+// Recursively remove keys with no value and no non-empty children
+function pruneEmptyKeys(obj) {
+  if (Array.isArray(obj)) {
+    // Clean each item in the array
+    const cleaned = obj.map(pruneEmptyKeys).filter(
+      v => v !== undefined && v !== null && !(typeof v === "string" && v.trim() === "")
+    );
+    return cleaned.length > 0 ? cleaned : undefined;
+  } else if (typeof obj === "object" && obj !== null) {
+    const cleaned = {};
+    for (const [k, v] of Object.entries(obj)) {
+      const pruned = pruneEmptyKeys(v);
+      if (
+        pruned !== undefined &&
+        pruned !== null &&
+        !(typeof pruned === "string" && pruned.trim() === "") &&
+        !(typeof pruned === "object" && Object.keys(pruned).length === 0)
+      ) {
+        cleaned[k] = pruned;
+      }
+    }
+    return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+  }
+  // For primitives, return as-is
+  return obj;
+}
+
+function collapseWhitespace(str) {
+  // Replace all runs of whitespace (space, tab, form feed, etc.) with a single space
+  return typeof str === "string"
+    ? str.replace(/[\s\f]+/g, " ").trim()
+    : str;
 }
